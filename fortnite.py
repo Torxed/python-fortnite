@@ -1,8 +1,10 @@
 import uuid
 import json
+from os.path import isfile
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen, build_opener, install_opener, HTTPCookieProcessor, BaseHandler
 from urllib.error import HTTPError
+from collections import OrderedDict
 import http.cookiejar
 
 URL_OAUTH_TOKEN = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token'
@@ -42,6 +44,7 @@ class HeaderFilter(BaseHandler):
 			if header in self.kwargs:
 				request.add_header(header, self.kwargs[header])
 
+		print('Request will be sent with these headers:', json.dumps(request.header_items(), indent=4))
 		return request
 	https_request = http_request
 
@@ -58,8 +61,6 @@ class HTTP():
 
 		self.headers = headers
 		self.cookies = http.cookiejar.CookieJar()
-		opener = build_opener(HTTPCookieProcessor(self.cookies))
-		install_opener(opener)
 
 		## Migrate kwargs to self.key = val
 		for key, val in kwargs.items():
@@ -73,15 +74,24 @@ class HTTP():
 		return client
 
 
-	def GET(self, url, headers={}, delete_headers={}, include_default_headers=True):
-		if include_default_headers: headers = {**self.headers, **headers}
-		for key in delete_headers: del(headers[key])
+	def GET(self, url, headers={}, delete_headers={}, include_default_headers=True, *args, **kwargs):
+		if include_default_headers:
+			headers = {**self.headers, **headers}
+		for d_header in delete_headers:
+			for header in list(headers.keys()):
+				if d_header.lower() == header.lower():
+					del(headers[header])
 
-		print('(GET) Url:', url)
-		print('Headers:', json.dumps(headers, indent=4))
+
+		request = Request('https://hvornum.se/token.php?url='+url, headers=headers)
+		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
+		response = opener.open(request)
+
 
 		request = Request(url, headers=headers)
-		response = urlopen(request)
+		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
+		print('(GET) URL:', url)
+		response = opener.open(request)
 
 		response_headers = response.info()
 		response_data = response.read().decode()
@@ -91,15 +101,21 @@ class HTTP():
 	def POST(self, url, payload, headers={}, delete_headers={}, include_default_headers=True, *args, **kwargs):
 		if include_default_headers:
 			headers = {**self.headers, **headers}
-		for key in delete_headers: del(headers[key])
+		for d_header in delete_headers:
+			for header in list(headers.keys()):
+				if d_header.lower() == header.lower():
+					del(headers[header])
+
+		request = Request('https://hvornum.se/token.php?url='+url, urlencode(payload).encode())
+		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
+		response = opener.open(request, urlencode(payload).encode())
 
 		request = Request(url, urlencode(payload).encode())
-		opener = build_opener(HeaderFilter(headers, **kwargs))
+		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
 
-		print('(POST) Url:', url)
-		print('Payload:', json.dumps(payload, indent=4))
-		print('Formatted payload:', urlencode(payload).encode())
-		response = opener.open(request)
+		print('(POST) URL:', url)
+		print('Payload: {} -> {}'.format(json.dumps(payload, indent=4), urlencode(payload).encode()))
+		response = opener.open(request, urlencode(payload).encode())
 
 		response_headers = response.info()
 		response_data = response.read().decode()
@@ -134,7 +150,7 @@ class Fortnite(HTTP):
 		HTTP.__init__(self)
 
 	def get_csrf_token(self, *args, **kwargs):
-		data, headers, raw_response = self.GET(URL_CSRF, delete_headers={'Authorization'})
+		data, headers, raw_response = self.GET(URL_CSRF, delete_headers={'Authorization', 'X-xsrf-token'})
 
 		for cookie in self.cookies:
 			if cookie.name == 'XSRF-TOKEN':
@@ -165,8 +181,9 @@ class Fortnite(HTTP):
 															include_default_headers=False)
 		except HTTPError as event:
 			code = event.getcode()
-			response = json.loads(event.read().decode())
-			print(response['message'])
+			if code != 60000:
+				response = json.loads(event.read().decode())
+				print(code, response['message'])
 
 	def redirect(self):
 		print('Redirecting')
@@ -269,11 +286,11 @@ class Fortnite(HTTP):
 		two_factor_code = input(f'{response["message"]}: ')
 
 		client.get_csrf_token() # Refresh it before 2FA because it will belong to the new auth process.
-		self.authenticate_2fa(two_factor_code, 'authenticator')
-		self.redirect()
-		ticket = self.exchange()
-		if ticket:
-			self.grant_token(ticket)
+		if self.authenticate_2fa(two_factor_code, 'authenticator'):# response['metadata']['twoFactorMethod']):
+			self.redirect()
+			ticket = self.exchange()
+			if ticket:
+				self.grant_token(ticket)
 
 	def get_oauth_token(self, *args, **kwargs):
 		headers = {
@@ -287,5 +304,29 @@ class Fortnite(HTTP):
 		
 		self.POST(URL_OAUTH_TOKEN, headers=headers, payload=payload)
 
-client = Fortnite('eric@fnite.se', 'Lx0e1utY!')
+if isfile('config.json'):
+	with open('config.json', 'r') as fh:
+		config = json.load(fh)
+else:
+	config = {'rotation' : 0}
+
+accounts = OrderedDict({
+	'eric@fnite.se' : {'password' : 'Lx0e1utY!', 'disabled' : True},
+	'henric@fnite.se' : {'password' : 'Q04nWZ4QyC', 'disabled' : True},
+	'roger@fnite.se' : {'password' : '9WnYJmtS1E', 'disabled' : False}
+})
+
+config['rotation'] = (config['rotation'] + 1) % len(accounts)
+
+with open('config.json', 'w') as fh:
+	json.dump(config, fh)
+
+for index, account in enumerate(accounts.keys()):
+	if index != config['rotation']: continue
+	if accounts[account]['disabled']: continue
+	break
+if index != config['rotation']: raise EpicError('No active accounts to try')
+
+print('Using account:', account)
+client = Fortnite(account, accounts[account]['password'])
 client.login()
