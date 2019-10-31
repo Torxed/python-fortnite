@@ -1,52 +1,94 @@
 import uuid
-import json
+import ssl, zlib, io
+from json import *
+from socket import *
 from os.path import isfile
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen, build_opener, install_opener, HTTPCookieProcessor, BaseHandler
-from urllib.error import HTTPError
 from collections import OrderedDict
-import http.cookiejar
+from select import epoll, EPOLLIN, EPOLLHUP
+from time import time
 
 URL_OAUTH_TOKEN = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token'
 URL_LOGIN = 'https://www.epicgames.com/id/api/login'
 URL_2FA = 'https://www.epicgames.com/id/api/login/mfa'
 URL_REDIRECT = 'https://www.epicgames.com/id/api/redirect'
 URL_EXCHANGE = 'https://www.epicgames.com/id/api/exchange'
-URL_GRANT_TOKEN = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token'
-#URL_2FA = 'https://hvornum.se/token.php'
+URL_GRANT_TOKEN = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token' # TODO: redundant?
+URL_ACCOUNT = 'https://account-public-service-prod03.ol.epicgames.com/account/api'
+#URL_2FA = 'http://hvornum.se/id/api/login/mfa'
 URL_CSRF = 'https://www.epicgames.com/id/api/csrf'
+URL_SESSION_KILL = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/sessions/kill'
+URL_GET_EULA = 'https://eulatracking-public-service-prod-m.ol.epicgames.com/eulatracking/api/public/agreements/fn/account'
+URL_ACCEPT_EULA = 'https://eulatracking-public-service-prod-m.ol.epicgames.com/eulatracking/api/public/agreements/fn/version'
+URL_GRANT_ACCESS_TO_GAME = 'https://fortnite-public-service-prod11.ol.epicgames.com/fortnite/api/game/v2/grant_access'
+URL_FRIENDS = 'https://friends-public-service-prod06.ol.epicgames.com/friends/api/public/friends'
 
 class EpicError(Exception):
 	def __init__(self, message, errors=None):
 		super(EpicError, self).__init__(message)
 		self.errors = errors
 
-class HeaderFilter(BaseHandler):
-	"""
-	Filters headers based on what's given in {headers} to keep,
-	and if the kept header is in {kwargs} it overwrites the default ones.
-	"""
-	def __init__(self, headers, *args, **kwargs):
-		BaseHandler.__init__(self)
-		self.headers = headers
-		self.args = args
-		for item in list(kwargs.keys()): kwargs[item.lower()] = kwargs[item]
-		self.kwargs = kwargs
+#	dumps(obj, cls=JSON_Typer)
+class JSON_Typer(JSONEncoder):
+	def _encode(self, obj, recursion):
+		if isinstance(obj, dict):
+			new_obj = {}
+			def check_key(o):
+				if type(o) == bytes:
+					o = o.decode('UTF-8', errors='replace')
+				elif type(o) == Cookie:
+					o = o.__repr__()
+				elif type(o) == set:
+					o = loads(dumps(o, cls=JSON_Typer))
+				return o
+			
+			for key, val in list(obj.items()):
+				if isinstance(val, dict):
+					val = loads(dumps(val, cls=JSON_Typer)) # This, is a EXTREMELY ugly hack..
+															# But it's the only quick way I can think of to 
+															# trigger a encoding of sub-dictionaries. (I'm also very tired, yolo!)
+				else:
+					val = check_key(val)
+				#del(obj[key])
+				new_obj[check_key(key)] = val
+			return new_obj
+		elif isinstance(obj, (datetime, date)):
+			return obj.isoformat()
+		elif isinstance(obj, Cookie):
+			return o.__repr__()
+		elif isinstance(obj, (list, set, tuple)):
+			r = []
+			for item in obj:
+				r.append(loads(dumps(item, cls=JSON_Typer)))
+			return r
+		else:
+			return obj
 
-	def http_request(self, request):
-		for header, val in request.header_items():
-			if header.lower() not in self.headers:
-				request.remove_header(header)
-			elif header.lower() in self.headers and header.lower() in self.kwargs:
-				request.remove_header(header)
-				request.add_header(header, self.kwargs[header.lower()])
-		for header in self.headers:
-			if header in self.kwargs:
-				request.add_header(header, self.kwargs[header])
+	def encode(self, obj, recursion=0):
+		return super(JSON_Typer, self).encode(self._encode(obj, recursion=recursion))
 
-		print('Request will be sent with these headers:', json.dumps(request.header_items(), indent=4))
-		return request
-	https_request = http_request
+class Cookie():
+	def __init__(self, name, value, paramters):
+		self.name = name
+		self.value = value
+		self.built = time()
+		for parameter in paramters.split(';'):
+			if '=' in parameter:
+				key, val = parameter.split('=', 1)
+				val = val.strip(' ;')
+			else:
+				key, val = parameter, True
+			self.__dict__[key.strip(' ;')] = val
+
+	def __repr__(self, *args, **kwargs):
+		return self.value
+
+	def validate_path(self, url):
+		if not 'Path' in self.__dict__: return True
+		if url[:len(self.__dict__['Path'])] == self.__dict__['Path']:
+			print(f'Cookie {self.name} is valid for {url[:len(self.__dict__["Path"])]}')
+			return True
+		return False
 
 class HTTP():
 	"""
@@ -56,71 +98,228 @@ class HTTP():
 	"""
 	def __init__(self, cookies={}, headers={}, *args, **kwargs):
 		if not 'User-Agent' in headers: headers['User-Agent'] = 'EpicGamesLauncher/10.2.3-7092195+++Portal+Release-Live Windows/10.0.17134.1.768.64bit'
-		if not 'Authorization' in headers: headers['Authorization'] = f'basic {self.pick_auth_token(self.client_stage)}'
+		#if not 'Authorization' in headers: headers['Authorization'] = f'basic {self.pick_auth_token(self.client_stage)}'
 		if not 'Accept-Language' in headers: headers['Accept-Language'] = 'en-EN'
+		if not 'Accept' in headers: headers['Accept'] = '*/*'
+		if not 'Accept-Encoding' in headers: headers['Accept-Encoding'] = 'gzip, deflate'
+		#'Content-Type' : 'application/x-www-form-urlencoded'
+		#'Content-Length' 
+		#'Host'
 
 		self.headers = headers
-		self.cookies = http.cookiejar.CookieJar()
+		self.content_encoding = None
+		self.cookies = {}
 
 		## Migrate kwargs to self.key = val
 		for key, val in kwargs.items():
 			self.__dict__[key] = val
 
-	def pick_auth_token(self, client):
-		if client.upper() == 'FORTNITE':
-			return self.fortnite_token
-		elif client.upper() == 'LAUNCHER':
-			return self.launcher_token
-		return client
+	def peak_headers(self, data):
+		if b'\r\n\r\n' in data:
+			headers, payload = data.split(b'\r\n\r\n', 1)
+			for index, item in enumerate(headers.split(b'\r\n')):
+				if index == 0:
+					trash, code, message = item.split(b' ', 2)
+					if code == b'204':
+						return True
+				if b':' in item:
+					key, val = item.split(b':', 1)
+					if key.strip().lower() == b'content-length':
+						if int(val.strip().decode('UTF-8')) >= len(payload):
+							return True
+					elif key.strip().lower() == b'content-encoding':
+						self.content_encoding = val.strip().decode('UTF-8')
+					elif key.strip().lower() == b'transfer-encoding':
+						if val.strip().lower() == b'chunked':
+							ending = b'0\r\n\r\n'
+							if payload[0-len(ending):] == ending:
+								return True
 
+	def unchunk(self, payload):
+		clean = b''
+		index = 0
+		print('Unchunking')
+		while True:
+			if b'\r\n' in payload[index:]:
+				l, tmp = payload[index:].split(b'\r\n', 1)
+				l = l.decode('UTF-8')
+				chunk_len = int(l, 16)
 
-	def GET(self, url, headers={}, delete_headers={}, include_default_headers=True, *args, **kwargs):
-		if include_default_headers:
+				print('Chunk:', clean[-20:], chunk_len, l, payload[index+len(l)+2:index+len(l)+2+chunk_len])
+				if chunk_len != 0:
+					clean += payload[index+len(l)+2:index+len(l)+2+chunk_len]
+					index += len(l) + 2 + chunk_len + 2
+					continue
+				else:
+					print('Returning clean:')
+					print(clean[:120], clean[-120:])
+					print('Clean returned')
+					return clean
+		return None
+
+	def parse_headers(self, headers, overwrite_cookies=True):
+		clean = {}
+		cookies = {}
+
+		for index, item in enumerate(headers.split(b'\r\n')):
+			if index == 0:
+				trash, code, message = item.split(b' ', 2)
+				clean['HTTP_STATUS'] = {'code' : int(code.strip().decode('UTF-8')), 'message' : message.decode('UTF-8')}
+				continue
+
+			if b':' in item:
+				key, val = item.decode('UTF-8').split(':', 1)
+				if key.strip().lower() == 'set-cookie':
+					key, val = val.split('=',1)
+					if ';' in val:
+						val, params = val.split(';', 1)
+					else:
+						val, params = val, ''
+					cookie = Cookie(key.strip(), val.strip(' ;'), params)
+					#val = val.split(';')[0]
+					cookies[key.strip()] = cookie# val.strip(" ;")
+				else:
+					clean[key.strip()] = val.strip(" ;")
+
+		if overwrite_cookies:
+			#dumps(obj, cls=JSON_Typer)
+			self.cookies = {**self.cookies, **cookies}
+		clean['COOKIES'] = cookies
+		return clean
+
+	def get_request_response(self, socket, overwrite_cookies=True):
+		poller = epoll()
+		poller.register(socket.fileno(), EPOLLIN | EPOLLHUP)
+		response = b''
+		alive = True
+		self.content_encoding = None
+		while alive:
+			for fileno, event in poller.poll(0.25):
+				data = socket.recv(8192)
+				if len(data) <= 0:
+					alive = False
+					break
+
+				response += data
+				print('Got data, peaking at headers again:', response[-200:])
+				if self.peak_headers(response):
+					alive = False
+					break
+
+		headers, payload = response.split(b'\r\n\r\n', 1)
+		headers = self.parse_headers(headers, overwrite_cookies=overwrite_cookies)
+
+		for header in headers:
+			if header.lower() == 'transfer-encoding':
+				if headers[header].lower() == 'chunked':
+					payload = self.unchunk(payload)
+
+		if self.content_encoding and self.content_encoding == 'gzip':
+			payload = zlib.decompress(payload, 16+zlib.MAX_WBITS)
+
+		print('Response:')
+		print(dumps(headers, indent=4, sort_keys=True, cls=JSON_Typer))
+		print(payload[:400])
+		print('----')
+
+		return headers, payload.decode('UTF-8')
+
+	def HTTP_REQUEST(self, method, url, headers={}, cookies={}, payload=None, *args, **kwargs):
+		if not 'INCLUDE_DEFAULT_HEADERS' in kwargs: kwargs['INCLUDE_DEFAULT_HEADERS'] = True
+		if not 'FILTER_OUT_HEADERS' in kwargs: kwargs['FILTER_OUT_HEADERS'] = False
+		if not 'CLOSE_AFTER_REQUEST' in kwargs: kwargs['CLOSE_AFTER_REQUEST'] = True
+		if not 'OVERWRITE_COOKIES' in kwargs: kwargs['OVERWRITE_COOKIES'] = True
+
+		if kwargs['INCLUDE_DEFAULT_HEADERS']:
 			headers = {**self.headers, **headers}
-		for d_header in delete_headers:
-			for header in list(headers.keys()):
-				if d_header.lower() == header.lower():
-					del(headers[header])
+
+		if kwargs['FILTER_OUT_HEADERS']:
+			for key in kwargs['FILTER_OUT_HEADERS']:
+				for hkey in list(headers.keys()):
+					if hkey.lower() == key.lower():
+						del(headers[hkey])
+
+		if 'https://' in url[:8]:
+			tls, port = True, 443
+			host, url = url[8:].split('/', 1)
+		elif 'http://' in url[:7]:
+			tls, port = False, 80
+			host, url = url[7:].split('/', 1)
+		else:
+			raise EpicError('Not a valid URL endpoint:', url)
+		url = f'/{url}'
+
+		# Add POST/GET specific headers
+		if payload:
+			if 'Content-Type' not in headers or headers['Content-Type'] != 'application/json':
+				payload = urlencode(payload)
+				headers['Content-Type'] = 'application/x-www-form-urlencoded'
+			else:
+				payload = dumps(payload)
+			if not 'Content-Length' in headers:
+				headers['Content-Length'] = len(payload)
+		if not 'Host' in headers:
+			headers['Host'] = host
+
+		self.socket = socket()
+		request = f'{method} {url} HTTP/1.1\r\n'
+		for key, val in headers.items():
+			request += f'{key}: {val}\r\n'
+
+		if len(self.cookies):
+			cookie_string = ''
+			if len(cookies): # Add only filtered cookies
+				for cookie in cookies:
+					if cookie in self.cookies and self.cookies[cookie].validate_path(url):
+						cookie_string += f'{cookie}={self.cookies[cookie]}; '
+			else:
+				for cookie in self.cookies:
+					if self.cookies[cookie].validate_path(url):
+						cookie_string += f'{cookie}={self.cookies[cookie]}; '
+			request += f'Cookie: {cookie_string[:-2]}; samesite=strict\r\n'
+		request += '\r\n'
+		if payload:
+			request += payload
+
+		print('\nSending request:')
+		print(request)
+
+		self.socket.connect((host, port))
+		if tls:
+			context = ssl.create_default_context()
+			self.socket = context.wrap_socket(self.socket, server_hostname=host)
+
+		self.socket.send(bytes(request, 'UTF-8'))
+		headers, payload = self.get_request_response(self.socket, kwargs['OVERWRITE_COOKIES'])
+
+		if kwargs['CLOSE_AFTER_REQUEST']:
+			self.socket.close()
+
+		if 'Content-Type' in headers:
+			if headers['Content-Type'] == 'application/json':
+				try:
+					payload = loads(payload)
+				except Exception as e:
+					print(' * * * Could not load JSON:')
+					print(payload[:200], payload[-200:])
+					print(' * * * ')
 
 
-		request = Request('https://hvornum.se/token.php?url='+url, headers=headers)
-		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
-		response = opener.open(request)
+		return socket, headers, payload
 
 
-		request = Request(url, headers=headers)
-		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
-		print('(GET) URL:', url)
-		response = opener.open(request)
+	def DELETE(self, url, headers={}, cookies={}, *args, **kwargs):
+		socket, headers, payload = self.HTTP_REQUEST('DELETE', url, headers, cookies, *args, **kwargs)
+		return headers, payload
 
-		response_headers = response.info()
-		response_data = response.read().decode()
+	def GET(self, url, headers={}, cookies={}, *args, **kwargs):
+		socket, headers, payload = self.HTTP_REQUEST('GET', url, headers, cookies, *args, **kwargs)
+		return headers, payload
 
-		return response_data, response_headers, response
+	def POST(self, url, payload={}, headers={}, cookies={}, *args, **kwargs):
+		socket, headers, payload = self.HTTP_REQUEST('POST', url, headers, cookies, payload=payload, *args, **kwargs)
 
-	def POST(self, url, payload, headers={}, delete_headers={}, include_default_headers=True, *args, **kwargs):
-		if include_default_headers:
-			headers = {**self.headers, **headers}
-		for d_header in delete_headers:
-			for header in list(headers.keys()):
-				if d_header.lower() == header.lower():
-					del(headers[header])
-
-		request = Request('https://hvornum.se/token.php?url='+url, urlencode(payload).encode())
-		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
-		response = opener.open(request, urlencode(payload).encode())
-
-		request = Request(url, urlencode(payload).encode())
-		opener = build_opener(HTTPCookieProcessor(self.cookies), HeaderFilter(headers, **kwargs))
-
-		print('(POST) URL:', url)
-		print('Payload: {} -> {}'.format(json.dumps(payload, indent=4), urlencode(payload).encode()))
-		response = opener.open(request, urlencode(payload).encode())
-
-		response_headers = response.info()
-		response_data = response.read().decode()
-		
-		return response_data, response_headers, response
+		return headers, payload
 
 class Fortnite(HTTP):
 	def __init__(self, email, password, *args, **kwargs):
@@ -139,6 +338,8 @@ class Fortnite(HTTP):
 		#if not 'two_factor_code' in kwargs: kwargs['two_factor_code'] = None
 		if not 'client_stage' in kwargs: kwargs['client_stage'] = 'LAUNCHER' # Will migrate to FORTNITE after successful login etc.
 
+		if not 'EULA_ACCEPTED' in kwargs: kwargs['EULA_ACCEPTED'] = False
+
 		## Migrate kwargs to self.key = val
 		for key, val in kwargs.items():
 			self.__dict__[key] = val
@@ -146,180 +347,211 @@ class Fortnite(HTTP):
 		self.kill_other_sessions = True
 		self.accept_eula = True
 
+		self.launcher_information = None
+		self.profiles = {}
+		self.logged_in_as = None
+
 		# Fire up the old web engine after the configuration is set.
 		HTTP.__init__(self)
 
-	def get_csrf_token(self, *args, **kwargs):
-		data, headers, raw_response = self.GET(URL_CSRF, delete_headers={'Authorization', 'X-xsrf-token'})
+		if self.login():
+			self.logged_in_as = self.launcher_information['account_id']
+			response = self.get_profile(self.logged_in_as, cache_profile=True)
 
-		for cookie in self.cookies:
-			if cookie.name == 'XSRF-TOKEN':
-				self.headers['x-xsrf-token'] = cookie.value
-				return cookie.value
+			if self.kill_other_sessions:
+				self.DELETE(URL_SESSION_KILL+'?killType=OTHERS_ACCOUNT_CLIENT_SERVICE',
+									headers={
+										'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+									})
+
+			if not kwargs['EULA_ACCEPTED']:
+				if self.agree_on_eula(self.logged_in_as):
+					if self.grant_access(self.logged_in_as):
+						print('You can now play Fortnite.')
+
+	def agree_on_eula(self, account_id):
+		version, accepted = self.get_eula_version(account_id)
+		if version and version != 0 and not accepted:
+			print('Accepting it:', version)
+			return self.accept_eula_version(version, account_id)
+		elif accepted:
+			print('EULA already accepted')
+			return True
+		return False
+
+	def accept_eula_version(self, account_id, version):
+		headers, data = self.POST(f'{URL_ACCEPT_EULA}/{version}/account/{account_id}/accept?locale=en',
+										headers={
+											'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+										})
+		print('Accepted EULA:', headers)
+		if headers['HTTP_STATUS']['code'] == 200:
+			return True
+
+	def grant_access(self, account_id):
+		headers, data = self.POST(f'{URL_GRANT_ACCESS_TO_GAME}/{account_id}',
+									headers={
+										'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+									})
+
+		print('Granted access to game:', headers, data[:299])
+		if headers['HTTP_STATUS']['code'] in (200, 204):
+			return True
+
+	def get_eula_version(self, account_id):
+		headers, data = self.GET(f'{URL_GET_EULA}/{account_id}',
+										headers={
+											'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+										})
+
+		print('Getting EULA version:', headers)
+		if headers['HTTP_STATUS']['code'] == 200:
+			version = data['version'] if 'version' in data else 0
+			was_declined = data['wasDeclined'] if 'wasDeclined' in data else False
+			return version, False if was_declined else True
+
+	def get_csrf_token(self, *args, **kwargs):
+		headers, data = self.GET(URL_CSRF)
+
+		if 'XSRF-TOKEN' in headers['COOKIES']:
+			self.headers['x-xsrf-token'] = headers['COOKIES']['XSRF-TOKEN']
+			return headers['COOKIES']['XSRF-TOKEN']
 
 		raise EpicError("Could not get XSRF token (Required to pass forgery checks), aborting!")
 
 	def authenticate_2fa(self, code, method):
-		try:
-			data, headers, raw_response = self.POST(URL_2FA,
-															payload={
-																'code': code,
-																'method': method,
-																'rememberDevice': 'False'
-															},
-															headers={
-																'content-type',
-																'content-length',
-																'accept-encoding',
-																'accept',
-																'accept-language',
-																'user-agent',
-																'x-xsrf-token',
-																'host'
-															},
-															**self.headers,
-															include_default_headers=False)
-		except HTTPError as event:
-			code = event.getcode()
-			if code != 60000:
-				response = json.loads(event.read().decode())
-				print(code, response['message'])
+		headers, data = self.POST(URL_2FA,
+									payload={
+										'code': code,
+										'method': method,
+										'rememberDevice': 'False'
+									},
+									header_order=['Host', 'x-xsrf-token', 'User-Agent', 'Accept-Language', 'Accept', 'Accept-Encoding', 'Content-Length', 'Content-Type'])
+		if headers['HTTP_STATUS']['code'] == 200:
+			return True
 
 	def redirect(self):
 		print('Redirecting')
-		try:
-			data, headers, raw_response = self.GET(URL_REDIRECT,
-														headers={
-															'accept-encoding',
-															'accept',
-															'accept-language',
-															'user-agent',
-															'x-xsrf-token',
-															'referer',
-															'host'
-														},
-														**self.headers,
-														referer = 'https://www.epicgames.com/id/login',
-														include_default_headers=False)
-			print(data)
-		except HTTPError as event:
-			print(event.getcode())
-			print(event.read().decode())
+		
+		headers, data = self.GET(URL_REDIRECT,
+									headers={
+										'referer' : 'https://www.epicgames.com/id/login',
+									})
+
+		# {"redirectUrl":"https://epicgames.com/account/personal","sid":"ed775bfa65724793b1b39f07cbb4bf9b"}
+		if headers['HTTP_STATUS']['code'] == 200:
+			return True
 
 	def exchange(self):
 		print('Exchange')
-		try:
-			data, headers, raw_response = self.GET(URL_EXCHANGE,
-														headers={
-															'accept-encoding',
-															'accept',
-															'accept-language',
-															'user-agent',
-															'x-xsrf-token',
-															'host'
-														},
-														**self.headers,
-														include_default_headers=False)
-			response = json.loads(data)
-			return response['code']
-		except HTTPError as event:
-			print(event.getcode())
-			print(event.read().decode())
+
+		headers, data = self.GET(URL_EXCHANGE)
+		response = loads(data)
+		return response['code']
+		#except HTTPError as event:
+		#	print(event.getcode())
+		#	print(event.read().decode())
 
 	def grant_token(self, ticket):
-		try:
-			data, headers, raw_response = self.POST(URL_GRANT_TOKEN,
-														payload={
-															'grant_type': 'exchange_code',
-															'exchange_code': ticket,
-															'token_type': 'eg1',
-														},
-														headers={
-															'content-type',
-															'content-length',
-															'accept-encoding',
-															'accept',
-															'accept-language',
-															'user-agent',
-															'x-xsrf-token',
-															'host',
-															'authorization'
-														},
-														**self.headers)
-		except HTTPError as event:
-			code = event.getcode()
-			if code != 431:
-				print('Unknown error:', code, event, event.read())
-				exit(1)
-			data = event.read().decode()
+		print('Granting token')
+		headers, data = self.POST(URL_GRANT_TOKEN,
+										payload={
+											'grant_type': 'exchange_code',
+											'exchange_code': ticket,
+											'token_type': 'eg1',
+										},
+										headers={
+											'authorization' : f'basic {self.launcher_token}'
+										})
 
+		if headers['HTTP_STATUS']['code'] == 200:
+			return data
+		return False
 
 	def login(self):
-		client.get_csrf_token()
-		try:
-			data, headers, raw_response = self.POST(URL_LOGIN,
-														payload={
-															'email': self.email,
-															'password': self.password,
-															'rememberMe': 'False'
-														},
-														headers={
-															'content-type',
-															'content-length',
-															'accept-encoding',
-															'accept',
-															'accept-language',
-															'user-agent',
-															'x-xsrf-token',
-															'host'
-														},
-														**self.headers,
-														include_default_headers=False)
-		except HTTPError as event:
-			code = event.getcode()
-			if code != 431:
-				print('Unknown error:', code, event, event.read())
-				exit(1)
-			data = event.read().decode()
+		self.get_csrf_token()
+		headers, data = self.POST(URL_LOGIN,
+										cookies = {
+											'EPIC_SSO_SESSION',
+											'XSRF-TOKEN'
+										},
+										payload={
+											'email': self.email,
+											'password': self.password,
+											'rememberMe': 'False'
+										})
 
-		response = json.loads(data)
-		two_factor_code = input(f'{response["message"]}: ')
+		response = loads(data)
+		if headers['HTTP_STATUS']['code'] == 431:
+			two_factor_code = input(f'{response["message"]}: ')
 
-		client.get_csrf_token() # Refresh it before 2FA because it will belong to the new auth process.
-		if self.authenticate_2fa(two_factor_code, 'authenticator'):# response['metadata']['twoFactorMethod']):
-			self.redirect()
+			self.get_csrf_token() # Refresh it before 2FA because it will belong to the new auth process.
+			if not self.authenticate_2fa(two_factor_code, 'authenticator'):# response['metadata']['twoFactorMethod']):
+				return False
+
+		if self.redirect():
 			ticket = self.exchange()
 			if ticket:
-				self.grant_token(ticket)
+				self.launcher_information = self.grant_token(ticket)
 
-	def get_oauth_token(self, *args, **kwargs):
-		headers = {
-			'X-Epic-Device-ID': self.device_id
-		}
-		payload = {
-			'grant_type': 'password',
-			'username': self.email,
-			'password': self.password
-		}
+				return True
+
+	def get_profile(self, account_id, cache_profile=True):
+		headers, data = self.GET(f'{URL_ACCOUNT}/public/account/{account_id}',
+									headers={
+										'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+									})
+
+		if headers['HTTP_STATUS']['code'] == 200:
+			self.profiles[account_id] = data
+			return data
+		return False
+
+	def get_friends(self, include_pending=False, cache_profiles=True):
+		headers, data = self.GET(f'{URL_FRIENDS}/{self.logged_in_as}?includePending={include_pending}',
+									headers={
+										'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+									})
+
+		if headers['HTTP_STATUS']['code'] == 200:
+			if cache_profiles:
+				print('Caching friends profiles (might take a while, unless you have no friends)')
+				for friend in data:
+					self.get_profile(friend['accountId'], cache_profile=True)
+			return data
 		
-		self.POST(URL_OAUTH_TOKEN, headers=headers, payload=payload)
+		return None
+
+	def get_stats(self, account_id):
+		headers, data = self.GET(
+            'https://fortnite-public-service-prod11.ol.epicgames.com/fortnite/api/' \
+            'statsv2/account/{0}{1}'.format(account_id, ''),
+            headers={
+				'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+			})
+
+		print('--- Stats:')
+		print(data)
+
 
 if isfile('config.json'):
 	with open('config.json', 'r') as fh:
-		config = json.load(fh)
+		config = load(fh)
 else:
 	config = {'rotation' : 0}
 
 accounts = OrderedDict({
-	'eric@fnite.se' : {'password' : 'Lx0e1utY!', 'disabled' : True},
-	'henric@fnite.se' : {'password' : 'Q04nWZ4QyC', 'disabled' : True},
-	'roger@fnite.se' : {'password' : '9WnYJmtS1E', 'disabled' : False}
+	'eric@fnite.se' : {'password' : 'Lx0e1utY!', 'disabled' : False, 'EULA_ACCEPTED' : True},
+	'henric@fnite.se' : {'password' : 'Q04nWZ4QyC', 'disabled' : False, 'EULA_ACCEPTED' : False},
+	'roger@fnite.se' : {'password' : '9WnYJmtS1E', 'disabled' : False, 'EULA_ACCEPTED' : False},
+	'hans@fnite.se' : {'password' : '3tKnL9wTRf', 'disabled' : False, 'EULA_ACCEPTED' : True},
+	'someone@fnite.se' : {'password' : 'gZRi6BeC6L', 'disabled' : False, 'EULA_ACCEPTED' : True}
 })
 
 config['rotation'] = (config['rotation'] + 1) % len(accounts)
 
 with open('config.json', 'w') as fh:
-	json.dump(config, fh)
+	dump(config, fh)
 
 for index, account in enumerate(accounts.keys()):
 	if index != config['rotation']: continue
@@ -328,5 +560,7 @@ for index, account in enumerate(accounts.keys()):
 if index != config['rotation']: raise EpicError('No active accounts to try')
 
 print('Using account:', account)
-client = Fortnite(account, accounts[account]['password'])
-client.login()
+client = Fortnite(account, accounts[account]['password'], EULA_ACCEPTED=accounts[account]['EULA_ACCEPTED'])
+
+#print(client.get_friends(True))
+client.get_stats(client.logged_in_as)
