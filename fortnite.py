@@ -1,4 +1,4 @@
-import uuid
+import uuid, sys
 import ssl, zlib, io
 from json import *
 from socket import *
@@ -22,6 +22,7 @@ URL_GET_EULA = 'https://eulatracking-public-service-prod-m.ol.epicgames.com/eula
 URL_ACCEPT_EULA = 'https://eulatracking-public-service-prod-m.ol.epicgames.com/eulatracking/api/public/agreements/fn/version'
 URL_GRANT_ACCESS_TO_GAME = 'https://fortnite-public-service-prod11.ol.epicgames.com/fortnite/api/game/v2/grant_access'
 URL_FRIENDS = 'https://friends-public-service-prod06.ol.epicgames.com/friends/api/public/friends'
+URL_STATS = 'https://fortnite-public-service-prod11.ol.epicgames.com/fortnite/api/stats/accountId/{accountId}/bulk/window/alltime'
 
 class EpicError(Exception):
 	def __init__(self, message, errors=None):
@@ -86,7 +87,7 @@ class Cookie():
 	def validate_path(self, url):
 		if not 'Path' in self.__dict__: return True
 		if url[:len(self.__dict__['Path'])] == self.__dict__['Path']:
-			print(f'Cookie {self.name} is valid for {url[:len(self.__dict__["Path"])]}')
+			#print(f'Cookie {self.name} is valid for {url[:len(self.__dict__["Path"])]}')
 			return True
 		return False
 
@@ -138,22 +139,22 @@ class HTTP():
 	def unchunk(self, payload):
 		clean = b''
 		index = 0
-		print('Unchunking')
+		#print('Unchunking')
 		while True:
 			if b'\r\n' in payload[index:]:
 				l, tmp = payload[index:].split(b'\r\n', 1)
 				l = l.decode('UTF-8')
 				chunk_len = int(l, 16)
 
-				print('Chunk:', clean[-20:], chunk_len, l, payload[index+len(l)+2:index+len(l)+2+chunk_len])
+				#print('Chunk:', clean[-20:], chunk_len, l, payload[index+len(l)+2:index+len(l)+2+chunk_len])
 				if chunk_len != 0:
 					clean += payload[index+len(l)+2:index+len(l)+2+chunk_len]
 					index += len(l) + 2 + chunk_len + 2
 					continue
 				else:
-					print('Returning clean:')
-					print(clean[:120], clean[-120:])
-					print('Clean returned')
+					#print('Returning clean:')
+					#print(clean[:120], clean[-120:])
+					#print('Clean returned')
 					return clean
 		return None
 
@@ -201,7 +202,7 @@ class HTTP():
 					break
 
 				response += data
-				print('Got data, peaking at headers again:', response[-200:])
+				#print('Got data, peaking at headers again:', response[-200:])
 				if self.peak_headers(response):
 					alive = False
 					break
@@ -217,10 +218,10 @@ class HTTP():
 		if self.content_encoding and self.content_encoding == 'gzip':
 			payload = zlib.decompress(payload, 16+zlib.MAX_WBITS)
 
-		print('Response:')
-		print(dumps(headers, indent=4, sort_keys=True, cls=JSON_Typer))
-		print(payload[:400])
-		print('----')
+		#print('Response:')
+		#print(dumps(headers, indent=4, sort_keys=True, cls=JSON_Typer))
+		#print(payload[:400])
+		#print('----')
 
 		return headers, payload.decode('UTF-8')
 
@@ -281,8 +282,8 @@ class HTTP():
 		if payload:
 			request += payload
 
-		print('\nSending request:')
-		print(request)
+		#print('\nSending request:')
+		#print(request)
 
 		self.socket.connect((host, port))
 		if tls:
@@ -366,16 +367,18 @@ class Fortnite(HTTP):
 
 			if not kwargs['EULA_ACCEPTED']:
 				if self.agree_on_eula(self.logged_in_as):
+					#print('EULA accepted!')
 					if self.grant_access(self.logged_in_as):
-						print('You can now play Fortnite.')
+						#print('You can now play Fortnite.')
+						return True
 
 	def agree_on_eula(self, account_id):
 		version, accepted = self.get_eula_version(account_id)
 		if version and version != 0 and not accepted:
-			print('Accepting it:', version)
+			#print('Accepting it:', version)
 			return self.accept_eula_version(version, account_id)
 		elif accepted:
-			print('EULA already accepted')
+			#print('EULA already accepted')
 			return True
 		return False
 
@@ -384,7 +387,7 @@ class Fortnite(HTTP):
 										headers={
 											'Authorization' : f'bearer {self.launcher_information["access_token"]}'
 										})
-		print('Accepted EULA:', headers)
+		#print('Accepted EULA:', headers)
 		if headers['HTTP_STATUS']['code'] == 200:
 			return True
 
@@ -394,7 +397,7 @@ class Fortnite(HTTP):
 										'Authorization' : f'bearer {self.launcher_information["access_token"]}'
 									})
 
-		print('Granted access to game:', headers, data[:299])
+		#print('Granted access to game:', headers, data[:299])
 		if headers['HTTP_STATUS']['code'] in (200, 204):
 			return True
 
@@ -404,7 +407,7 @@ class Fortnite(HTTP):
 											'Authorization' : f'bearer {self.launcher_information["access_token"]}'
 										})
 
-		print('Getting EULA version:', headers)
+		#print('Getting EULA version:', headers)
 		if headers['HTTP_STATUS']['code'] == 200:
 			version = data['version'] if 'version' in data else 0
 			was_declined = data['wasDeclined'] if 'wasDeclined' in data else False
@@ -431,7 +434,7 @@ class Fortnite(HTTP):
 			return True
 
 	def redirect(self):
-		print('Redirecting')
+		#print('Redirecting')
 		
 		headers, data = self.GET(URL_REDIRECT,
 									headers={
@@ -443,7 +446,7 @@ class Fortnite(HTTP):
 			return True
 
 	def exchange(self):
-		print('Exchange')
+		#print('Exchange')
 
 		headers, data = self.GET(URL_EXCHANGE)
 		response = loads(data)
@@ -453,7 +456,7 @@ class Fortnite(HTTP):
 		#	print(event.read().decode())
 
 	def grant_token(self, ticket):
-		print('Granting token')
+		#print('Granting token')
 		headers, data = self.POST(URL_GRANT_TOKEN,
 										payload={
 											'grant_type': 'exchange_code',
@@ -533,34 +536,10 @@ class Fortnite(HTTP):
 		print('--- Stats:')
 		print(data)
 
-
-if isfile('config.json'):
-	with open('config.json', 'r') as fh:
-		config = load(fh)
-else:
-	config = {'rotation' : 0}
-
-accounts = OrderedDict({
-	'eric@fnite.se' : {'password' : 'Lx0e1utY!', 'disabled' : False, 'EULA_ACCEPTED' : True},
-	'henric@fnite.se' : {'password' : 'Q04nWZ4QyC', 'disabled' : False, 'EULA_ACCEPTED' : False},
-	'roger@fnite.se' : {'password' : '9WnYJmtS1E', 'disabled' : False, 'EULA_ACCEPTED' : False},
-	'hans@fnite.se' : {'password' : '3tKnL9wTRf', 'disabled' : False, 'EULA_ACCEPTED' : True},
-	'someone@fnite.se' : {'password' : 'gZRi6BeC6L', 'disabled' : False, 'EULA_ACCEPTED' : True}
-})
-
-config['rotation'] = (config['rotation'] + 1) % len(accounts)
-
-with open('config.json', 'w') as fh:
-	dump(config, fh)
-
-for index, account in enumerate(accounts.keys()):
-	if index != config['rotation']: continue
-	if accounts[account]['disabled']: continue
-	break
-if index != config['rotation']: raise EpicError('No active accounts to try')
-
-print('Using account:', account)
-client = Fortnite(account, accounts[account]['password'], EULA_ACCEPTED=accounts[account]['EULA_ACCEPTED'])
-
-#print(client.get_friends(True))
-client.get_stats(client.logged_in_as)
+	def get_public_stats(self, account_id):
+		URL_STATS
+		headers, data = self.GET(URL_STATS.format(accountId=account_id),
+					            headers={
+									'Authorization' : f'bearer {self.launcher_information["access_token"]}'
+								})
+		print('PubStats:', data)
