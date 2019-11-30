@@ -4,6 +4,13 @@
 
 A python lib to access the Fortnite API, supports 2FA and requires no reversing/SSL stripper.
 
+# Requirements:
+
+ * Linux *(due to the efficiency of [epoll](https://docs.python.org/3/library/select.html#select.epoll). Can change this if need arises)*
+ * Python3+
+
+No external libraries are used.
+
 # Example:
 
 > If you're using a new account, `EULA_ACCEPTED` needs to be `False` the first time you use the account.
