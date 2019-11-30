@@ -32,3 +32,15 @@ print(info)
 > `Fortnite()` caches the **2FA** verification during the scripts lifetime, but restarts require a new 2FA verification.
 
 For a [asyncio](https://docs.python.org/3/library/asyncio.html) version that has more features, have a look at [fortnitepy](https://github.com/Terbau/fortnitepy)
+
+# Docs
+
+    Fortnite(username, password, EULA_ACCEPTED=False) - Main class, logs in to Epic Games and authenticates Fortnite access.
+
+    Fortnite.get_stats(epic_id) - V2 of Fortnite stats. Gets season stats, not per-game stats (like most other libraries)
+
+    Fortnite.get_profile(epic_id) - Get user information (displayName etc.)
+
+    Fortnite.get_friends() - Get friends of the logged in account.
+
+    Fortnite.get_public_stats(epic_id) - Get minimal informational stats of the account.
