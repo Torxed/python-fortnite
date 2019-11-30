@@ -23,3 +23,5 @@ print(info)
 
 > The client automatically logs in, and gets ready to query for stats etc.
 > `Fortnite()` caches the **2FA** verification during the scripts lifetime, but restarts require a new 2FA verification.
+
+For a [asyncio](https://docs.python.org/3/library/asyncio.html) version that has more features, have a look at [fortnitepy](https://github.com/Terbau/fortnitepy)
