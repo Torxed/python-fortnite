@@ -8,6 +8,10 @@ from collections import OrderedDict
 from select import epoll, EPOLLIN, EPOLLHUP
 from time import time
 
+# For replays: https://github.com/Kuinox/ChartsNite
+#   http://www.radgametools.com/oodle.htm
+#   https://github.com/EpicGames/UnrealEngine/blob/release/Engine/Plugins/Runtime/PacketHandlers/CompressionComponents/Oodle/Source/OodleCompressionFormat/Private/OodleCompressionFormat.cpp
+
 URL_OAUTH_TOKEN = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token'
 URL_LOGIN = 'https://www.epicgames.com/id/api/login'
 URL_2FA = 'https://www.epicgames.com/id/api/login/mfa'
