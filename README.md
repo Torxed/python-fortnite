@@ -12,7 +12,7 @@ A python lib to access the Fortnite API, supports 2FA and requires no reversing/
 
 ```python
 from fortnite import *
-client = Fortnite('henric@fnite.se', 'Q04nWZ4QyC', EULA_ACCEPTED=True)
+client = Fortnite('henric@fnite.se', 'PasswordNumbaOne!', EULA_ACCEPTED=True)
 
 # YOUR OWN ID: client.logged_in_as
 
