@@ -6,8 +6,8 @@ A python lib to access the Fortnite API, supports 2FA and requires no reversing/
 
 # Example:
 
-> If you're using a new account, EULA_ACCEPTED needs to be False the first time you use it.
-> This in order for the client to "accept" the EULA which ultimately unlocks access to Fortnite API.
+> If you're using a new account, `EULA_ACCEPTED` needs to be `False` the first time you use the account.
+> This in order for the client to *"accept"* the EULA which ultimately unlocks access to Fortnite API.
 > Otherwise, the account will get rejected from quering the API *(most likely)*.
 
 ```python
