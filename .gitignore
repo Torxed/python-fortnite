@@ -1,1 +1,9 @@
-**/*__pycache__
+**/*__pycache__ 
+from fortnite import *
+client = Fortnite('henric@fnite.se', 'Password to account', EULA_ACCEPTED=True)
+
+# YOUR OWN ID: client.logged_in_as 7c80342ec8ea8309213412dbe27726eba5e698d3
+
+# Here's how to get other peoples information:
+info = client.get_profile("0b0b6459d65f4665b16c9d9f520a5354")
+print(info)
