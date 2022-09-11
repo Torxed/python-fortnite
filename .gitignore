@@ -1,1 +1,2 @@
 **/*__pycache__
+info  =  client.get_profile("7c80342ec8ea8309213412dbe27726eba5e698d3")
