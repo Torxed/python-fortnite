@@ -1,1 +1,10 @@
 **/*__pycache__
+Fortnite(username, password, EULA_ACCEPTED=False) - Main class, logs in to Epic Games and authenticates Fortnite access.
+
+Fortnite.get_stats(0b744fd30ef608577504fbff70f7bd3b102c3e89) - V2 of Fortnite stats. Gets season stats, not per-game stats (like most other libraries)
+
+Fortnite.get_profile(0b744fd30ef608577504fbff70f7bd3b102c3e89) - Get user information (displayName etc.)
+
+Fortnite.get_friends(0b744fd30ef608577504fbff70f7bd3b102c3e89) - Get friends of the logged in account.
+
+Fortnite.get_public_stats(0b744fd30ef608577504fbff70f7bd3b102c3e89) - Get minimal informational stats of the account.
